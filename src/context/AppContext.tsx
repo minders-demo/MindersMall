@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Product } from '../data/products';
-import { identifyUser, logBrazeEvent, setBrazeUserAttributes } from '../lib/braze';
+import { identifyUser, logBrazeEvent, setBrazeUserAttributes, logoutBrazeUser } from '../lib/braze';
 
 export type UserType = string;
 
@@ -221,10 +221,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncBrazeAttributes(newUser);
   };
 
-  const logout = () => {
+const logout = () => {
     setUser(defaultUser);
-    identifyUser('anonymous');
-    syncBrazeAttributes(defaultUser);
+    logoutBrazeUser();
+    // No sincronizamos atributos tras logout: evitamos sobrescribir
+    // el perfil real del último usuario identificado con datos del defaultUser.
   };
 
   const addToCart = (product: Product) => {
