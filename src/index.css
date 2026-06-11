@@ -1,0 +1,19 @@
+@import "tailwindcss";
+
+body {
+  background-color: #050505;
+  color: white;
+}
+
+/* Light Theme CSS Filter Trick */
+html.light-theme {
+  filter: invert(1) hue-rotate(180deg);
+  background-color: white;
+}
+
+html.light-theme img, 
+html.light-theme video {
+  filter: invert(1) hue-rotate(180deg);
+}
+
+/* Specific elements you don't want inverted back can be adjusted, but images and SVGs are usually enough */
