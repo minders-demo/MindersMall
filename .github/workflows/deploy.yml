@@ -33,6 +33,9 @@ jobs:
 
       - name: Build project
         run: npm run build
+        env:
+          VITE_BRAZE_API_KEY: ${{ secrets.VITE_BRAZE_API_KEY }}
+          VITE_BRAZE_SDK_ENDPOINT: ${{ secrets.VITE_BRAZE_SDK_ENDPOINT }}
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
