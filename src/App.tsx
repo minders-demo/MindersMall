@@ -17,13 +17,15 @@ import { BrazeDemoPanel } from './pages/BrazeDemoPanel';
 import { Messages } from './pages/Messages';
 
 export default function App() {
+  const basename = import.meta.env.BASE_URL === '/' ? undefined : import.meta.env.BASE_URL;
+
   useEffect(() => {
     initBraze();
   }, []);
 
   return (
     <AppProvider>
-      <BrowserRouter>
+      <BrowserRouter basename={basename}>
         <div className="min-h-screen flex flex-col font-sans bg-[#050505] text-white selection:bg-indigo-500 selection:text-white">
           <Header />
           <main className="flex-1 flex flex-col">
@@ -43,5 +45,3 @@ export default function App() {
     </AppProvider>
   );
 }
-
-
