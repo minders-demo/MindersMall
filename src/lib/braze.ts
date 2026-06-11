@@ -14,47 +14,54 @@ import type { ContentCards, Card } from '@braze/web-sdk';
 
 let isBrazeInitialized = false;
 
-// Suppress Braze network errors (e.g. AdBlock, CORS) to prevent infinite loops in AI Studio scraper
-const originalConsoleError = console.error;
-console.error = (...args) => {
-  if (typeof args[0] === 'string' && args[0].includes('HTTP error 0 retrieving content cards')) {
-    return;
-  }
-  originalConsoleError(...args);
-};
-
 export const getIsBrazeInitialized = () => isBrazeInitialized;
 
 export const initBraze = () => {
+  // Guard: evita doble inicialización (React StrictMode ejecuta useEffect 2 veces en dev)
+  if (isBrazeInitialized) return;
+
   const apiKey = import.meta.env.VITE_BRAZE_API_KEY;
   const sdkEndpoint = import.meta.env.VITE_BRAZE_SDK_ENDPOINT;
 
   const isPlaceholderKey = !apiKey || String(apiKey).includes('your_') || apiKey === 'YOUR_API_KEY';
   const isPlaceholderEndpoint = !sdkEndpoint || String(sdkEndpoint).includes('your_') || String(sdkEndpoint).includes('XX');
 
-  if (apiKey && sdkEndpoint && !isPlaceholderKey && !isPlaceholderEndpoint) {
-    let cleanEndpoint = String(sdkEndpoint).replace(/^https?:\/\//, '').replace(/\/$/, '');
-    
-    try {
-      initialize(String(apiKey), {
-        baseUrl: cleanEndpoint,
-        enableLogging: false,
-      });
-      automaticallyShowInAppMessages();
-      openSession();
-      isBrazeInitialized = true;
-    } catch (e) {
-      console.error('Failed to initialize Braze SDK', e);
+  if (isPlaceholderKey || isPlaceholderEndpoint) {
+    // Aviso SIEMPRE visible (también en producción) para diagnosticar builds sin credenciales
+    console.warn(
+      '[Braze] SDK NO inicializado: faltan VITE_BRAZE_API_KEY y/o VITE_BRAZE_SDK_ENDPOINT en el build. ' +
+      'Si esto es GitHub Pages, configura los Secrets del repositorio y el bloque env: en deploy.yml.'
+    );
+    return;
+  }
+
+  const cleanEndpoint = String(sdkEndpoint).replace(/^https?:\/\//, '').replace(/\/$/, '');
+
+  try {
+    const ok = initialize(String(apiKey), {
+      baseUrl: cleanEndpoint,
+      enableLogging: true, // visible en consola: ideal para demos y para verificar el flush de eventos
+    });
+    if (!ok) {
+      console.warn('[Braze] initialize() devolvió false. Revisa API key y endpoint.');
+      return;
     }
-  } else {
-    if (import.meta.env.DEV) {
-      console.warn('Braze API key or endpoint not found in environment variables.');
-    }
+    automaticallyShowInAppMessages();
+    openSession();
+    isBrazeInitialized = true;
+    console.log(`[Braze] SDK inicializado contra ${cleanEndpoint}`);
+  } catch (e) {
+    console.error('[Braze] Falló la inicialización del SDK', e);
   }
 };
 
 export const identifyUser = (externalId: string, attributes?: Record<string, any>) => {
   if (!isBrazeInitialized) return;
+  // Nunca identificar con IDs genéricos/compartidos (antipatrón según docs de Braze)
+  if (!externalId || externalId === 'anonymous') {
+    console.warn('[Braze] identifyUser ignorado: external_id genérico o vacío.');
+    return;
+  }
   try {
     console.log(`[Braze SDK] Identify User: ${externalId}`);
     changeUser(externalId);
@@ -64,6 +71,16 @@ export const identifyUser = (externalId: string, attributes?: Record<string, any
   } catch (e) {
     console.warn('Braze changeUser failed', e);
   }
+};
+
+/**
+ * Logout seguro para la demo: NO llama changeUser('anonymous').
+ * El Web SDK no permite "des-identificar" una sesión; reutilizar un external_id
+ * compartido como "anonymous" mezclaría datos de todos los visitantes en un solo perfil.
+ */
+export const logoutBrazeUser = () => {
+  if (!isBrazeInitialized) return;
+  console.log('[Braze SDK] Logout local: se mantiene el último perfil identificado en el dispositivo.');
 };
 
 export const logBrazeEvent = (eventName: string, properties?: Record<string, any>) => {
