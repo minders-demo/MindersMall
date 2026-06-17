@@ -10,10 +10,16 @@ import {
   logContentCardClick,
   logContentCardImpressions,
   requestPushPermission,
+  requestImmediateDataFlush,
   isPushSupported,
   isPushBlocked,
 } from '@braze/web-sdk';
 import type { ContentCards, Card } from '@braze/web-sdk';
+
+// External ID del usuario con el que pruebas el in-app (al que le das "Send Test").
+// El token de push DEBE quedar en este perfil; por eso lo forzamos al activar push.
+// Cámbialo si pruebas con otro usuario.
+const TEST_PUSH_EXTERNAL_ID = 'luchito_diaz_demo';
 
 let isBrazeInitialized = false;
 
@@ -43,7 +49,7 @@ export const initBraze = () => {
     const ok = initialize(String(apiKey), {
       baseUrl: cleanEndpoint,
       enableLogging: true, // visible en consola: ideal para demos y para verificar el flush de eventos
-      manageServiceWorkerExternally: true, // NUEVO: registramos el SW nosotros (obligatorio en GitHub Pages /MindersMall/)
+      manageServiceWorkerExternally: true, // registramos el SW nosotros (obligatorio en GitHub Pages /MindersMall/)
     });
     if (!ok) {
       console.warn('[Braze] initialize() devolvió false. Revisa API key y endpoint.');
@@ -54,7 +60,6 @@ export const initBraze = () => {
     isBrazeInitialized = true;
     console.log(`[Braze] SDK inicializado contra ${cleanEndpoint}`);
 
-    // NUEVO: registrar el service worker de push y montar el botón para pedir permiso
     registerBrazeServiceWorker();
     mountPushButton();
   } catch (e) {
@@ -171,7 +176,7 @@ export const handleBrazeCardAction = (url?: string) => {
 };
 
 // ============================================================
-// NUEVO: Web Push (necesario para que el test de in-app funcione)
+// Web Push (necesario para que el test de in-app funcione)
 // ============================================================
 
 /**
@@ -190,27 +195,40 @@ function registerBrazeServiceWorker(): void {
 }
 
 /**
- * Pide permiso de push al navegador para el usuario ACTUALMENTE identificado.
- * Puedes llamarla desde cualquier botón propio (ej. en BrazeDemoPanel).
+ * Pide permiso de push. Si pasas un externalId, primero identifica a ese usuario
+ * para que el token quede en SU perfil (clave para que el Send Test funcione).
  */
-export const requestBrazePush = (): void => {
+export const requestBrazePush = (externalId?: string): void => {
   if (!isBrazeInitialized) {
-    console.warn('[Braze] No se puede pedir push: el SDK no está inicializado.');
+    console.warn('[Braze] No se puede pedir push: el SDK no está inicializado (revisa los Secrets del repo).');
     return;
   }
   if (typeof isPushSupported === 'function' && !isPushSupported()) {
     console.warn('[Braze] Push no soportado en este navegador.');
     return;
   }
+  if (typeof isPushBlocked === 'function' && isPushBlocked()) {
+    console.warn('[Braze] Push BLOQUEADO para este sitio. Resetéalo en el candado del navegador > Notificaciones > Preguntar.');
+  }
+  if (externalId) {
+    console.log(`[Braze] changeUser("${externalId}") antes de pedir push...`);
+    changeUser(externalId);
+  }
   requestPushPermission(
-    () => console.log('[Braze] Permiso de push concedido. Token registrado en el perfil actual.'),
-    () => console.warn('[Braze] Permiso de push denegado o no soportado.')
+    () => {
+      console.log('[Braze] Permiso concedido. Token de push registrado en el perfil actual.');
+      try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
+    },
+    () => {
+      console.warn('[Braze] Permiso de push denegado o no soportado.');
+    }
   );
 };
 
 /**
- * Botón flotante "Activar notificaciones" (para no tocar tu JSX).
- * Si prefieres, borra esta función y llama requestBrazePush() desde un botón propio.
+ * Botón flotante "Activar notificaciones".
+ * Fuerza la identidad al usuario de prueba (TEST_PUSH_EXTERNAL_ID) para que el token
+ * quede en ese perfil. Para comportamiento genérico, pásale el usuario logueado de tu app.
  */
 function mountPushButton(): void {
   const create = () => {
@@ -234,13 +252,18 @@ function mountPushButton(): void {
     }
 
     btn.addEventListener('click', () => {
+      if (typeof isPushSupported === 'function' && !isPushSupported()) return;
+      console.log(`[Braze] Identificando como "${TEST_PUSH_EXTERNAL_ID}" antes de pedir push...`);
+      changeUser(TEST_PUSH_EXTERNAL_ID);
       requestPushPermission(
         () => {
-          console.log('[Braze] Permiso concedido. Token de push registrado.');
+          console.log('[Braze] Permiso concedido. Token registrado en', TEST_PUSH_EXTERNAL_ID);
           btn.textContent = 'Notificaciones activadas ✓';
+          try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
         },
         () => {
-          console.warn('[Braze] Permiso denegado o no soportado.');
+          console.warn('[Braze] Permiso de push denegado o no soportado.');
+          btn.textContent = 'Permiso denegado';
         }
       );
     });
