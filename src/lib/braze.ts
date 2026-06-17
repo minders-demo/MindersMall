@@ -9,6 +9,9 @@ import {
   subscribeToContentCardsUpdates,
   logContentCardClick,
   logContentCardImpressions,
+  requestPushPermission,
+  isPushSupported,
+  isPushBlocked,
 } from '@braze/web-sdk';
 import type { ContentCards, Card } from '@braze/web-sdk';
 
@@ -27,7 +30,6 @@ export const initBraze = () => {
   const isPlaceholderEndpoint = !sdkEndpoint || String(sdkEndpoint).includes('your_') || String(sdkEndpoint).includes('XX');
 
   if (isPlaceholderKey || isPlaceholderEndpoint) {
-    // Aviso SIEMPRE visible (también en producción) para diagnosticar builds sin credenciales
     console.warn(
       '[Braze] SDK NO inicializado: faltan VITE_BRAZE_API_KEY y/o VITE_BRAZE_SDK_ENDPOINT en el build. ' +
       'Si esto es GitHub Pages, configura los Secrets del repositorio y el bloque env: en deploy.yml.'
@@ -41,6 +43,7 @@ export const initBraze = () => {
     const ok = initialize(String(apiKey), {
       baseUrl: cleanEndpoint,
       enableLogging: true, // visible en consola: ideal para demos y para verificar el flush de eventos
+      manageServiceWorkerExternally: true, // NUEVO: registramos el SW nosotros (obligatorio en GitHub Pages /MindersMall/)
     });
     if (!ok) {
       console.warn('[Braze] initialize() devolvió false. Revisa API key y endpoint.');
@@ -50,6 +53,10 @@ export const initBraze = () => {
     openSession();
     isBrazeInitialized = true;
     console.log(`[Braze] SDK inicializado contra ${cleanEndpoint}`);
+
+    // NUEVO: registrar el service worker de push y montar el botón para pedir permiso
+    registerBrazeServiceWorker();
+    mountPushButton();
   } catch (e) {
     console.error('[Braze] Falló la inicialización del SDK', e);
   }
@@ -162,3 +169,88 @@ export const handleBrazeCardAction = (url?: string) => {
     }
   }
 };
+
+// ============================================================
+// NUEVO: Web Push (necesario para que el test de in-app funcione)
+// ============================================================
+
+/**
+ * Registra el service worker de Braze.
+ * En GitHub Pages el sitio vive bajo /MindersMall/, por eso usamos
+ * import.meta.env.BASE_URL para que la ruta y el scope sean correctos.
+ * El archivo DEBE estar en public/service-worker.js (Vite lo copia al build).
+ */
+function registerBrazeServiceWorker(): void {
+  if (!('serviceWorker' in navigator)) return;
+  const swUrl = `${import.meta.env.BASE_URL}service-worker.js`;
+  navigator.serviceWorker
+    .register(swUrl)
+    .then((reg) => console.log('[Braze] Service worker registrado. scope:', reg.scope))
+    .catch((err) => console.error('[Braze] Error registrando service worker:', err));
+}
+
+/**
+ * Pide permiso de push al navegador para el usuario ACTUALMENTE identificado.
+ * Puedes llamarla desde cualquier botón propio (ej. en BrazeDemoPanel).
+ */
+export const requestBrazePush = (): void => {
+  if (!isBrazeInitialized) {
+    console.warn('[Braze] No se puede pedir push: el SDK no está inicializado.');
+    return;
+  }
+  if (typeof isPushSupported === 'function' && !isPushSupported()) {
+    console.warn('[Braze] Push no soportado en este navegador.');
+    return;
+  }
+  requestPushPermission(
+    () => console.log('[Braze] Permiso de push concedido. Token registrado en el perfil actual.'),
+    () => console.warn('[Braze] Permiso de push denegado o no soportado.')
+  );
+};
+
+/**
+ * Botón flotante "Activar notificaciones" (para no tocar tu JSX).
+ * Si prefieres, borra esta función y llama requestBrazePush() desde un botón propio.
+ */
+function mountPushButton(): void {
+  const create = () => {
+    if (document.getElementById('braze-enable-push')) return;
+
+    const btn = document.createElement('button');
+    btn.id = 'braze-enable-push';
+    btn.textContent = 'Activar notificaciones';
+    btn.style.cssText =
+      'position:fixed;bottom:20px;right:20px;z-index:99999;' +
+      'padding:12px 18px;border-radius:9999px;border:none;' +
+      'background:#4f46e5;color:#fff;font-size:14px;' +
+      'font-family:system-ui,sans-serif;cursor:pointer;' +
+      'box-shadow:0 4px 12px rgba(0,0,0,0.25);';
+
+    if (typeof isPushSupported === 'function' && !isPushSupported()) {
+      btn.textContent = 'Push no soportado en este navegador';
+      btn.disabled = true;
+    } else if (typeof isPushBlocked === 'function' && isPushBlocked()) {
+      btn.textContent = 'Push bloqueado — actívalo en ajustes del sitio';
+    }
+
+    btn.addEventListener('click', () => {
+      requestPushPermission(
+        () => {
+          console.log('[Braze] Permiso concedido. Token de push registrado.');
+          btn.textContent = 'Notificaciones activadas ✓';
+        },
+        () => {
+          console.warn('[Braze] Permiso denegado o no soportado.');
+        }
+      );
+    });
+
+    document.body.appendChild(btn);
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', create);
+  } else {
+    create();
+  }
+}
