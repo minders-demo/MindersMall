@@ -37,6 +37,13 @@ jobs:
           VITE_BRAZE_API_KEY: ${{ secrets.VITE_BRAZE_API_KEY }}
           VITE_BRAZE_SDK_ENDPOINT: ${{ secrets.VITE_BRAZE_SDK_ENDPOINT }}
 
+      # Fallback SPA para GitHub Pages: al recargar una ruta interna
+      # (ej. /MindersMall/messages) Pages busca ese archivo y devuelve 404.
+      # Sirviendo index.html como 404.html, React Router toma el control
+      # y la ruta carga bien incluso con refresh o enlace directo.
+      - name: SPA fallback (404.html)
+        run: cp dist/index.html dist/404.html
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
