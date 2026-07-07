@@ -17,16 +17,7 @@ import {
 } from '@braze/web-sdk';
 import type { ContentCards, Card } from '@braze/web-sdk';
 
-// External ID del usuario con el que pruebas push / in-app (al que le das "Send Test").
-const TEST_PUSH_EXTERNAL_ID = 'luchito_diaz_demo';
-
 let isBrazeInitialized = false;
-
-// Guardamos la promesa del registro del service worker.
-// Según docs de Braze: con manageServiceWorkerExternally=true, el SW DEBE estar
-// registrado ANTES de llamar requestPushPermission. Esperar esta promesa
-// elimina la condición de carrera (clic en el botón antes de que el SW esté listo).
-let swRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
 
 export const getIsBrazeInitialized = () => isBrazeInitialized;
 
@@ -53,8 +44,20 @@ export const initBraze = () => {
   try {
     const ok = initialize(String(apiKey), {
       baseUrl: cleanEndpoint,
-      enableLogging: true, // visible en consola: ideal para demos y verificar el flujo de push
-      manageServiceWorkerExternally: true, // registramos el SW nosotros (obligatorio en GitHub Pages /MindersMall/)
+      enableLogging: true,
+
+      // ⚠️ FIX DEFINITIVO ⚠️
+      // El SDK busca el service worker en "/service-worker.js" (la RAÍZ del
+      // dominio) por defecto. En GitHub Pages el sitio vive bajo /MindersMall/,
+      // así que nunca lo encontraba y lanzaba "No service worker registration".
+      // Según docs de Braze: si el service worker no está en la ubicación por
+      // defecto, es OBLIGATORIO indicar serviceWorkerLocation.
+      // BASE_URL = '/MindersMall/' → '/MindersMall/service-worker.js'
+      serviceWorkerLocation: `${import.meta.env.BASE_URL}service-worker.js`,
+
+      // Ya NO usamos manageServiceWorkerExternally: dejamos que el propio SDK
+      // registre el service worker (patrón recomendado en docs). El SDK espera
+      // a que esté activo antes de suscribir el token — se acabó la carrera.
     });
     if (!ok) {
       console.warn('[Braze] initialize() devolvió false. Revisa API key y endpoint.');
@@ -65,7 +68,6 @@ export const initBraze = () => {
     isBrazeInitialized = true;
     console.log(`[Braze] SDK inicializado contra ${cleanEndpoint}`);
 
-    registerBrazeServiceWorker();
     mountPushButton();
   } catch (e) {
     console.error('[Braze] Falló la inicialización del SDK', e);
@@ -85,12 +87,11 @@ export const identifyUser = (externalId: string, attributes?: Record<string, any
     if (attributes) {
       setBrazeUserAttributes(attributes);
     }
-    // ⚠️ CLAVE DEL FIX ⚠️
     // Según docs de Braze: "Only the most recent user on a particular browser
-    // will receive push notifications". Cada changeUser mueve el dispositivo
-    // al nuevo perfil y el token de push deja de estar en el perfil anterior.
-    // Si el permiso ya fue concedido, re-suscribimos el token al usuario ACTUAL
-    // para que el usuario activo de la demo SIEMPRE tenga token de push.
+    // will receive push notifications". El token de push viaja con el ÚLTIMO
+    // usuario identificado. Si el permiso ya fue concedido, re-suscribimos el
+    // token al usuario actual — así push funciona con CUALQUIER usuario que
+    // esté activo en la demo, sin volver a mostrar el prompt.
     resubscribePushIfGranted(externalId);
   } catch (e) {
     console.warn('Braze changeUser failed', e);
@@ -99,25 +100,23 @@ export const identifyUser = (externalId: string, attributes?: Record<string, any
 
 /**
  * Si el navegador ya concedió permiso de notificaciones, vuelve a suscribir
- * el token de push al perfil actualmente identificado. No muestra ningún
- * prompt al usuario (según docs, requestPushPermission no pregunta de nuevo
- * cuando isPushPermissionGranted() es true).
+ * el token de push al perfil actualmente identificado, sin mostrar prompt
+ * (según docs, requestPushPermission no pregunta de nuevo cuando
+ * isPushPermissionGranted() es true).
  */
 const resubscribePushIfGranted = (externalId: string) => {
   if (typeof isPushSupported === 'function' && !isPushSupported()) return;
   if (typeof isPushPermissionGranted === 'function' && !isPushPermissionGranted()) return;
 
-  ensureServiceWorkerReady().then(() => {
-    requestPushPermission(
-      () => {
-        console.log(`[Braze] Token de push re-suscrito al perfil actual: ${externalId}`);
-        try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
-      },
-      () => {
-        console.warn('[Braze] No se pudo re-suscribir el token de push al perfil actual.');
-      }
-    );
-  });
+  requestPushPermission(
+    () => {
+      console.log(`[Braze] Token de push re-suscrito al perfil actual: ${externalId}`);
+      try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
+    },
+    () => {
+      console.warn('[Braze] No se pudo re-suscribir el token de push al perfil actual.');
+    }
+  );
 };
 
 /**
@@ -215,52 +214,11 @@ export const handleBrazeCardAction = (url?: string) => {
 // ============================================================
 
 /**
- * Registra el service worker de Braze y GUARDA la promesa.
- * En GitHub Pages el sitio vive bajo /MindersMall/, por eso usamos
- * import.meta.env.BASE_URL para que la ruta y el scope sean correctos.
- * El archivo DEBE estar en public/service-worker.js (Vite lo copia al build).
+ * Pide permiso de push para el usuario ACTUALMENTE identificado.
+ * El SDK registra el service worker por sí mismo (serviceWorkerLocation)
+ * y suscribe el token al perfil activo. Funciona con cualquier usuario.
  */
-function registerBrazeServiceWorker(): void {
-  if (!('serviceWorker' in navigator)) return;
-  const swUrl = `${import.meta.env.BASE_URL}service-worker.js`;
-  swRegistrationPromise = navigator.serviceWorker
-    .register(swUrl)
-    .then((reg) => {
-      console.log('[Braze] Service worker registrado. scope:', reg.scope);
-      return reg;
-    })
-    .catch((err) => {
-      console.error('[Braze] Error registrando service worker:', err);
-      return null;
-    });
-}
-
-/**
- * Espera a que el SW esté registrado Y activo antes de pedir push.
- * Requisito de las docs de Braze cuando manageServiceWorkerExternally=true.
- */
-async function ensureServiceWorkerReady(): Promise<boolean> {
-  if (!('serviceWorker' in navigator)) return false;
-  try {
-    if (swRegistrationPromise) {
-      const reg = await swRegistrationPromise;
-      if (!reg) return false;
-    }
-    // navigator.serviceWorker.ready resuelve cuando hay un SW ACTIVO
-    // cuyo scope cubre la página actual (/MindersMall/).
-    await navigator.serviceWorker.ready;
-    return true;
-  } catch (e) {
-    console.error('[Braze] El service worker no llegó a estado activo:', e);
-    return false;
-  }
-}
-
-/**
- * Pide permiso de push. Si pasas un externalId, primero identifica a ese usuario
- * para que el token quede en SU perfil (clave para que el Send Test funcione).
- */
-export const requestBrazePush = (externalId?: string): void => {
+export const requestBrazePush = (): void => {
   if (!isBrazeInitialized) {
     console.warn('[Braze] No se puede pedir push: el SDK no está inicializado (revisa los Secrets del repo).');
     return;
@@ -274,35 +232,32 @@ export const requestBrazePush = (externalId?: string): void => {
     return;
   }
 
-  ensureServiceWorkerReady().then((swOk) => {
-    if (!swOk) {
-      console.warn('[Braze] No se pidió push: el service worker no está listo.');
-      return;
-    }
-    if (externalId) {
-      console.log(`[Braze] changeUser("${externalId}") antes de pedir push...`);
-      changeUser(externalId);
-    }
-    requestPushPermission(
-      (endpoint) => {
-        console.log('[Braze] Permiso concedido. Token de push registrado en el perfil actual.', endpoint || '');
-        try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
-      },
-      (temporary) => {
-        console.warn(
-          temporary
-            ? '[Braze] El usuario cerró el prompt sin decidir (denegación temporal). Puede volver a intentarlo.'
-            : '[Braze] Permiso de push DENEGADO permanentemente. Hay que reactivarlo en los ajustes del sitio (candado > Notificaciones).'
-        );
+  requestPushPermission(
+    () => {
+      const user = getUser();
+      if (user && typeof user.getUserId === 'function') {
+        user.getUserId((id) => {
+          console.log(`[Braze] Permiso concedido. Token de push registrado en el perfil: ${id || '(anónimo)'}`);
+        });
+      } else {
+        console.log('[Braze] Permiso concedido. Token de push registrado en el perfil actual.');
       }
-    );
-  });
+      try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
+    },
+    (temporary) => {
+      console.warn(
+        temporary
+          ? '[Braze] El usuario cerró el prompt sin decidir (denegación temporal). Puede volver a intentarlo.'
+          : '[Braze] Permiso de push DENEGADO permanentemente. Hay que reactivarlo en los ajustes del sitio (candado > Notificaciones).'
+      );
+    }
+  );
 };
 
 /**
  * Botón flotante "Activar notificaciones".
- * Fuerza la identidad al usuario de prueba (TEST_PUSH_EXTERNAL_ID) para que el token
- * quede en ese perfil. Para comportamiento genérico, pásale el usuario logueado de tu app.
+ * Registra el token de push en el perfil del usuario que esté identificado
+ * en ese momento en la demo (Luchito, Checho, Juan... el que sea).
  */
 function mountPushButton(): void {
   const create = () => {
@@ -325,7 +280,7 @@ function mountPushButton(): void {
       btn.textContent = 'Push bloqueado — actívalo en ajustes del sitio';
     }
 
-    btn.addEventListener('click', async () => {
+    btn.addEventListener('click', () => {
       if (typeof isPushSupported === 'function' && !isPushSupported()) return;
       if (typeof isPushBlocked === 'function' && isPushBlocked()) {
         btn.textContent = 'Push bloqueado — actívalo en ajustes del sitio';
@@ -334,23 +289,14 @@ function mountPushButton(): void {
 
       btn.textContent = 'Activando...';
 
-      // 1. Esperar a que el service worker esté ACTIVO (requisito docs Braze
-      //    con manageServiceWorkerExternally=true).
-      const swOk = await ensureServiceWorkerReady();
-      if (!swOk) {
-        btn.textContent = 'Error: service worker no disponible';
-        return;
-      }
-
-      // 2. Identificar al usuario de prueba ANTES de pedir el permiso,
-      //    para que el token quede en SU perfil.
-      console.log(`[Braze] Identificando como "${TEST_PUSH_EXTERNAL_ID}" antes de pedir push...`);
-      changeUser(TEST_PUSH_EXTERNAL_ID);
-
-      // 3. Pedir permiso / suscribir token.
       requestPushPermission(
         () => {
-          console.log('[Braze] Permiso concedido. Token registrado en', TEST_PUSH_EXTERNAL_ID);
+          const user = getUser();
+          if (user && typeof user.getUserId === 'function') {
+            user.getUserId((id) => {
+              console.log(`[Braze] Permiso concedido. Token registrado en el perfil: ${id || '(anónimo)'}`);
+            });
+          }
           btn.textContent = 'Notificaciones activadas ✓';
           try { requestImmediateDataFlush(); } catch (e) { /* noop */ }
         },
